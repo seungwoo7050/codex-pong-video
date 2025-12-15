@@ -1,6 +1,6 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { describe, expect, it, vi, beforeEach } from 'vitest'
+import { describe, expect, it, vi, beforeEach, beforeAll } from 'vitest'
 import { ReplaysPage } from '../pages/ReplaysPage'
 
 class MockWebSocket {
@@ -65,11 +65,31 @@ vi.mock('../shared/api/client', () => ({
  * [테스트] frontend/src/test/ExportProgress.test.tsx
  * 설명:
  *   - WebSocket 진행률 이벤트 수신 후 다운로드 링크가 노출되는지 스모크 검증한다.
- * 버전: v0.5.0
+ * 버전: v0.6.0
  * 관련 설계문서:
- *   - design/contracts/v0.5.0-replay-export-contract.md
+ *   - design/contracts/v0.6.0-portfolio-media-contract.md
  */
 describe('ReplaysPage export UI', () => {
+  beforeAll(() => {
+    HTMLCanvasElement.prototype.getContext = vi.fn((type: string) => {
+      if (type === '2d') {
+        return {
+          clearRect: vi.fn(),
+          fillRect: vi.fn(),
+          fillText: vi.fn(),
+          font: '',
+          fillStyle: '',
+        } as any
+      }
+      return {
+        viewport: vi.fn(),
+        clearColor: vi.fn(),
+        clear: vi.fn(),
+        COLOR_BUFFER_BIT: 0x4000,
+      } as any
+    })
+  })
+
   beforeEach(() => {
     apiFetchMock.mockClear()
     MockWebSocket.instances = []

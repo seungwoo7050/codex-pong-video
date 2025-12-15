@@ -157,7 +157,7 @@ No versions are planned beyond v0.6.0 in this repository.
 
 ## 5. v0.6.0 — Portfolio-grade media UX (WebGL/WebAudio + perf/utf8 hardening)
 
-**Status**: planned  
+**Status**: implemented
 **Goal**: upgrade v0.5.0 into a convincing “web video editor” engineering sample.
 
 ### 5.1 Scope
@@ -194,11 +194,11 @@ No versions are planned beyond v0.6.0 in this repository.
   - optional S3 adapter behind flags (only if time remains)
 
 ### 5.2 Completion criteria
-- WebGL path works and fallback works.
-- Export works in CPU-only environment; HW encode is optional and safe.
-- Perf audit doc exists (2 screens minimum).
-- UTF-8 regression tests pass consistently.
-- WS async code is readable (no deep callback nesting) and stable.
+- WebGL path works and fallback works (자동 감지 포함).
+- Export works in CPU-only environment; HW encode는 옵션이며 안전 폴백 보장.
+- Perf audit 문서가 2개 화면에 대해 캡처와 함께 존재함.
+- UTF-8 regression tests가 REST + WS + DB에서 통과함.
+- WS 비동기 코드가 재연결/에러 정책을 문서화하고 구현함.
 
 ### 5.3 Release checklist (submission gate)
 
