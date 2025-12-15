@@ -3,6 +3,8 @@ set -euo pipefail
 
 BACKEND_URL=${BACKEND_URL:-http://localhost:8080}
 ARTIFACT_FILE=${ARTIFACT_FILE:-/tmp/codexpong-demo.mp4}
+FFPROBE_JSON=${FFPROBE_JSON:-/tmp/codexpong-ffprobe.json}
+export FFPROBE_JSON
 
 function request_token() {
   local username="demo_utf8"
@@ -90,10 +92,11 @@ TARGET_IN_WORKER=/tmp/demo_v0_6.mp4
 docker compose cp "$ARTIFACT_FILE" worker:${TARGET_IN_WORKER}
 
 echo "[demo] ffprobe 구조 검증"
-docker compose exec -T worker ffprobe -v error -show_streams -show_format ${TARGET_IN_WORKER} >/tmp/ffprobe.json
+docker compose exec -T worker ffprobe -v error -print_format json -show_streams -show_format ${TARGET_IN_WORKER} >"${FFPROBE_JSON}"
 python - <<'PY'
-import json,sys
-with open('/tmp/ffprobe.json') as f:
+import json,sys,os
+path=os.environ.get('FFPROBE_JSON')
+with open(path) as f:
     data=json.load(f)
 streams=data.get('streams',[])
 video=[s for s in streams if s.get('codec_type')=='video']

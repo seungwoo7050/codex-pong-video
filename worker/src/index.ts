@@ -5,7 +5,7 @@ import fsp from 'fs/promises'
 import path from 'path'
 import crypto from 'crypto'
 import { assertNonTrivialFrames, validateProbeOutput } from './validation'
-import { selectEncoderConfig } from './encoderConfig'
+import { buildEncoderPlan } from './encoderConfig'
 
 /**
  * [엔트리] worker/src/index.ts
@@ -38,7 +38,7 @@ interface ExportMessage {
   preferHw: boolean
 }
 
-let cachedHwList: string[] | null = null
+let cachedEncoderList: string[] | null = null
 
 async function main() {
   const client = createClient({ url: `redis://${REDIS_HOST}:6379` })
@@ -123,31 +123,51 @@ async function renderMp4(client: ReturnType<typeof createClient>, message: Expor
   const finalPath = path.join(exportDir, `${message.jobId}.mp4`)
   await publishProgress(client, message.jobId, 10, 'ffmpeg 시작')
   const logTail: string[] = []
-  const encoder = await resolveEncoder(message.preferHw, logTail)
-  await runFfmpeg(
-    client,
-    [
-      '-y',
-      ...encoder.preArgs,
-      '-f',
-      'lavfi',
-      '-i',
-      `color=c=black:s=640x360:d=${Math.max(message.durationMillis / 1000, 1)}`,
-      '-vf',
-      `drawtext=text='Replay ${message.replayId} %{eif\\:t\\:d}ms':fontcolor=white:fontsize=32:x=20:y=20`,
-      '-c:v',
-      encoder.codec,
-      '-pix_fmt',
-      'yuv420p',
-      '-progress',
-      'pipe:1',
-      '-nostats',
-      tempPath,
-    ],
-    message.durationMillis,
-    message.jobId,
-    logTail,
-  )
+  const encoderPlan = await resolveEncoderPlan(message.preferHw, logTail)
+  const baseArgs = [
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    `color=c=black:s=640x360:d=${Math.max(message.durationMillis / 1000, 1)}`,
+    '-vf',
+    `drawtext=text='Replay ${message.replayId} %{eif\\:t\\:d}ms':fontcolor=white:fontsize=32:x=20:y=20`,
+    '-pix_fmt',
+    'yuv420p',
+    '-progress',
+    'pipe:1',
+    '-nostats',
+  ]
+  let lastError: any = null
+  for (let i = 0; i < encoderPlan.length; i += 1) {
+    const encoder = encoderPlan[i]
+    if (encoder.fallbackNote) {
+      logTail.push(encoder.fallbackNote)
+      console.warn('[hwaccel]', encoder.fallbackNote)
+      if (encoder.fallbackNote === 'HWACCEL_HANDSHAKE_FAILED') {
+        await publishProgress(client, message.jobId, 10, 'HW 가속 실패, 소프트웨어 폴백 중').catch(() => {})
+      }
+    }
+    try {
+      await runFfmpeg(
+        client,
+        [...encoder.preArgs, ...baseArgs, '-c:v', encoder.codec, tempPath],
+        message.durationMillis,
+        message.jobId,
+        logTail,
+      )
+      lastError = null
+      break
+    } catch (err) {
+      lastError = err
+      if (i >= encoderPlan.length - 1) {
+        throw err
+      }
+    }
+  }
+  if (lastError) {
+    throw lastError
+  }
   const probe = await probeFile(tempPath)
   const validated = validateProbeOutput(probe)
   const firstHash = await extractFrameHash(tempPath, validated.durationMs * 0.1)
@@ -234,28 +254,31 @@ async function runFfmpeg(
   })
 }
 
-async function resolveEncoder(preferHw: boolean, logTail: string[]) {
-  if (!cachedHwList) {
-    cachedHwList = await detectHwAccelerators()
+async function resolveEncoderPlan(preferHw: boolean, logTail: string[]) {
+  const available = await detectHardwareEncoders()
+  const plan = buildEncoderPlan(preferHw, available)
+  if (plan[0]?.fallbackNote && plan.length === 1) {
+    console.warn('[hwaccel]', plan[0].fallbackNote)
+    logTail.push(plan[0].fallbackNote)
   }
-  const config = selectEncoderConfig(preferHw, cachedHwList)
-  if (config.fallbackNote) {
-    logTail.push(config.fallbackNote)
-    console.warn('[hwaccel]', config.fallbackNote)
-  }
-  return config
+  return plan
 }
 
-async function detectHwAccelerators(): Promise<string[]> {
+async function detectHardwareEncoders(): Promise<string[]> {
+  if (cachedEncoderList) {
+    return cachedEncoderList
+  }
   return new Promise((resolve) => {
-    const proc = spawn('ffmpeg', ['-hwaccels'])
+    const proc = spawn('ffmpeg', ['-encoders'])
     const lines: string[] = []
     proc.stdout.on('data', (chunk) => {
-      lines.push(...chunk.toString().split('\n').map((l) => l.trim()).filter(Boolean))
+      lines.push(...chunk.toString().split('\n'))
     })
     proc.on('close', () => {
-      const filtered = lines.filter((line) => line && !line.toLowerCase().includes('hardware'))
-      resolve(filtered)
+      const targets = ['h264_nvenc', 'h264_vaapi', 'h264_qsv']
+      const detected = targets.filter((name) => lines.some((line) => line.toLowerCase().includes(name)))
+      cachedEncoderList = detected
+      resolve(detected)
     })
     proc.on('error', () => resolve([]))
   })

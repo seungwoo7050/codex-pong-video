@@ -13,19 +13,30 @@ export type EncoderConfig = {
   fallbackNote?: string
 }
 
-export function selectEncoderConfig(preferHw: boolean, accelerators: string[]): EncoderConfig {
+export function selectEncoderConfig(preferHw: boolean, encoders: string[]): EncoderConfig {
   if (!preferHw) {
     return { preArgs: [], codec: 'libx264' }
   }
-  const lower = accelerators.map((v) => v.toLowerCase())
-  if (lower.includes('cuda')) {
+  const lower = encoders.map((v) => v.toLowerCase())
+  if (lower.includes('h264_nvenc')) {
     return { preArgs: ['-hwaccel', 'cuda'], codec: 'h264_nvenc' }
   }
-  if (lower.includes('vaapi')) {
+  if (lower.includes('h264_vaapi')) {
     return { preArgs: ['-hwaccel', 'vaapi'], codec: 'h264_vaapi' }
   }
-  if (lower.includes('qsv')) {
+  if (lower.includes('h264_qsv')) {
     return { preArgs: ['-hwaccel', 'qsv'], codec: 'h264_qsv' }
   }
   return { preArgs: [], codec: 'libx264', fallbackNote: 'HWACCEL_UNAVAILABLE' }
+}
+
+export function buildEncoderPlan(preferHw: boolean, encoders: string[]): EncoderConfig[] {
+  if (!preferHw) {
+    return [{ preArgs: [], codec: 'libx264' }]
+  }
+  const selected = selectEncoderConfig(true, encoders)
+  if (selected.fallbackNote === 'HWACCEL_UNAVAILABLE') {
+    return [selected]
+  }
+  return [selected, { preArgs: [], codec: 'libx264', fallbackNote: 'HWACCEL_HANDSHAKE_FAILED' }]
 }
