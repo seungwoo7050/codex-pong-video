@@ -55,7 +55,7 @@ No versions are planned beyond v0.6.0 in this repository.
 
 ## 4. v0.5.0 — Replay + Export MVP (FFmpeg + async jobs + validation)
 
-**Status**: planned  
+**Status**: implemented
 **Goal**: produce a short, high-signal demo aligned to “web video editor” engineering.
 
 ### 4.1 Demo story (must be possible)

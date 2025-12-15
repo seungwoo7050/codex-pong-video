@@ -34,11 +34,19 @@ services:
       - DB_PASSWORD=codexpong
       - AUTH_JWT_SECRET=change-me-in-prod-secret-please-keep-long
       - TZ=Asia/Seoul
+      - APP_STORAGE_ROOT=/app/storage
+      - APP_STORAGE_REPLAY_EVENTS=replay-events
+      - APP_STORAGE_EXPORT=exports
+      - REDIS_HOST=redis
     ports:
       - "8080:8080"
     depends_on:
       - db
+      - redis
     restart: unless-stopped
+    volumes:
+      - replay_events:/app/storage/replay-events
+      - export_artifacts:/app/storage/exports
 
   frontend:
     build: ./frontend
@@ -50,6 +58,21 @@ services:
     ports:
       - "5173:5173"
     restart: unless-stopped
+
+  worker:
+    build: ./worker
+    container_name: codexpong-worker
+    environment:
+      - REDIS_HOST=redis
+      - APP_STORAGE_ROOT=/app/storage
+      - APP_STORAGE_REPLAY_EVENTS=replay-events
+      - APP_STORAGE_EXPORT=exports
+      - TZ=Asia/Seoul
+    depends_on:
+      - redis
+    volumes:
+      - replay_events:/app/storage/replay-events
+      - export_artifacts:/app/storage/exports
 
   nginx:
     build: ./infra/nginx
@@ -63,3 +86,5 @@ services:
 
 volumes:
   db_data:
+  replay_events:
+  export_artifacts:

@@ -1,13 +1,13 @@
-# CLONE_GUIDE (v0.4.0)
+# CLONE_GUIDE (v0.5.0)
 
 ## 1. 목적
-- v0.4.0 기준 실시간 1:1 게임 및 랭크 큐/리더보드 흐름을 실행하기 위한 안내서다.
-- 백엔드/프런트엔드/인프라와 JWT 시크릿, WebSocket 연결, 랭크 레이팅 계산을 한 번에 검증한다.
+- v0.5.0 기준 리플레이 저장과 FFmpeg 기반 비동기 내보내기 파이프라인을 실행하기 위한 안내서다.
+- 백엔드/프런트엔드/워커/인프라와 JWT 시크릿, WebSocket, Redis Streams 배선, 스토리지 구성을 한 번에 검증한다.
 
 ## 2. 사전 준비물
 - Git
 - Docker / Docker Compose
-- Node.js 18 (프런트엔드 로컬 실행 시)
+- Node.js 18 (프런트엔드 또는 워커 로컬 실행 시)
 - JDK 17 (백엔드 로컬 실행 시)
 
 ## 3. 클론 및 기본 구조
@@ -18,8 +18,9 @@ cd codex-pong
 - 주요 디렉터리
   - `backend/`: Spring Boot 소스
   - `frontend/`: React + Vite 소스
+  - `worker/`: FFmpeg/ffprobe 기반 내보내기 워커 (Node.js + TS)
   - `infra/`: Nginx 설정 등 인프라 자원
-  - `design/`: 한국어 설계 문서
+  - `design/`: 한국어 설계 문서 및 계약서
 
 ## 4. 환경변수
 - 백엔드 (docker-compose 기본값)
@@ -29,6 +30,10 @@ cd codex-pong
   - `DB_PASSWORD=codexpong`
   - `AUTH_JWT_SECRET` (32바이트 이상, 기본 `change-me-in-prod-secret-please-keep-long`)
   - `AUTH_JWT_EXPIRATION_SECONDS` (선택, 기본 3600)
+  - `APP_STORAGE_ROOT` (기본 `/app/storage`)
+  - `APP_STORAGE_REPLAY_EVENTS` (기본 `replay-events`)
+  - `APP_STORAGE_EXPORT` (기본 `exports`)
+  - `REDIS_HOST` (기본 `redis`)
 - 프런트엔드
   - `VITE_BACKEND_URL` (기본 `http://localhost:8080`)
   - `VITE_BACKEND_WS` (기본 `ws://localhost:8080`)
@@ -44,7 +49,10 @@ docker compose up -d
   - 헬스체크: http://localhost/api/health
   - WebSocket: ws://localhost/ws/echo (쿼리 파라미터 `token` 필요)
   - 게임 WebSocket: ws://localhost/ws/game?roomId=<매칭된-방>&token=<JWT>
+  - 작업 WebSocket: ws://localhost/ws/jobs?token=<JWT>
   - REST 예시: `/api/auth/register`로 회원가입 후 `/api/match/quick`으로 일반전 티켓, `/api/match/ranked`로 랭크전 티켓 발급
+- 포함 서비스: backend / frontend / db / redis / worker / nginx
+- 볼륨: `replay_events`, `export_artifacts` (리플레이 이벤트/산출물 공유)
 
 ## 6. 개별 서비스 로컬 실행 (선택)
 ### 6.1 백엔드
@@ -57,6 +65,12 @@ cd backend
 cd frontend
 npm install
 npm run dev -- --host --port 5173
+```
+### 6.3 워커
+```bash
+cd worker
+npm install
+npm test   # ffprobe/프레임 가드 유닛 테스트
 ```
 
 ## 7. 테스트 실행
@@ -71,14 +85,19 @@ cd frontend
 npm install
 npm test
 ```
-### 7.3 프런트엔드 빌드 확인
+### 7.3 워커 테스트
+```bash
+cd worker
+npm test
+```
+### 7.4 프런트엔드 빌드 확인
 ```bash
 cd frontend
 npm install
 npm run build
 ```
 
-## 8. 버전별 메모 (v0.4.0)
-- 주요 기능: 일반/랭크 대전 분리, 랭크 레이팅 갱신, 리더보드 조회.
-- 매칭 절차: 로비에서 원하는 큐 선택 → 일반전 `/api/match/quick`, 랭크전 `/api/match/ranked` 티켓 발급 → roomId로 `/ws/game` 연결.
-- 랭크전 종료 시 WebSocket 메시지에 `ratingChange`가 포함되며, `/api/games` 및 리더보드에서 최신 레이팅을 확인할 수 있다.
+## 8. 버전별 메모 (v0.5.0)
+- 주요 기능: 리플레이 메타/이벤트 조회, 내보내기 작업 생성, Redis Streams 기반 워커 진행률, WebSocket 진행률 푸시.
+- 리플레이 파일은 `APP_STORAGE_ROOT` 하위 `replay-events`에 JSONL_V1로 저장되며, 산출물은 `exports` 하위에서 공유된다.
+- 워커 컨테이너는 ffmpeg/ffprobe를 사전 설치하고, 검증 실패 시 안정적인 `error_code`를 반환하도록 설계되었다.
