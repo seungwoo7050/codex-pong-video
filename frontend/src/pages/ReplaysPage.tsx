@@ -1,38 +1,70 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { apiFetch } from '../shared/api/client'
+import { API_BASE_URL, WS_BASE_URL } from '../constants'
+import { useAuth } from '../features/auth/AuthProvider'
 
 /**
  * [페이지] frontend/src/pages/ReplaysPage.tsx
  * 설명:
- *   - 리플레이 목록을 노출하고 기본 재생/일시정지/구간 이동/재생 속도 제어를 제공한다.
- *   - v0.5.0 내보내기 버튼으로 작업 진행률과 완료 링크를 UI에서 확인한다.
+ *   - 리플레이 목록을 실제 API에서 불러오고 재생 컨트롤과 내보내기 요청을 제공한다.
+ *   - /ws/jobs WebSocket과 REST 폴백을 통해 진행률/완료/실패 이벤트를 반영한다.
  * 버전: v0.5.0
  * 관련 설계문서:
  *   - design/contracts/v0.5.0-replay-export-contract.md
  */
+type ReplaySummary = {
+  id: number
+  ownerId: number
+  title: string
+  durationMillis: number
+  createdAt: string
+}
+
+type JobResponse = {
+  schemaVersion: string
+  id: string
+  replayId: number
+  type: string
+  status: 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED'
+  progress: number
+  error_code?: string | null
+  error_message?: string | null
+}
+
 export function ReplaysPage() {
-  const replays = useMemo(
-    () => [
-      { id: 1, title: '샘플 리플레이', durationMillis: 120000 },
-      { id: 2, title: '연습 경기', durationMillis: 90000 },
-    ],
-    [],
-  )
-  const [selectedId, setSelectedId] = useState(1)
+  const { token } = useAuth()
+  const [replays, setReplays] = useState<ReplaySummary[]>([])
+  const [selectedId, setSelectedId] = useState<number | null>(null)
   const [isPlaying, setPlaying] = useState(false)
   const [position, setPosition] = useState(0)
   const [speed, setSpeed] = useState(1)
+  const [jobId, setJobId] = useState<string | null>(null)
   const [exportProgress, setExportProgress] = useState(0)
   const [jobStatus, setJobStatus] = useState<'idle' | 'running' | 'completed' | 'failed'>('idle')
   const [error, setError] = useState<string | null>(null)
+  const [downloadUrl, setDownloadUrl] = useState<string | null>(null)
 
-  const activeReplay = replays.find((r) => r.id === selectedId) ?? replays[0]
+  const activeReplay = useMemo(() => replays.find((r) => r.id === selectedId) ?? replays[0], [replays, selectedId])
+
+  const loadReplays = useCallback(async () => {
+    if (!token) return
+    const response = await apiFetch<{ items: ReplaySummary[] }>('/api/replays', {}, token)
+    setReplays(response.items)
+    if (response.items.length > 0 && selectedId === null) {
+      setSelectedId(response.items[0].id)
+    }
+  }, [selectedId, token])
 
   useEffect(() => {
-    if (!isPlaying) return
+    loadReplays().catch(() => setReplays([]))
+  }, [loadReplays])
+
+  useEffect(() => {
+    if (!isPlaying || !activeReplay) return
     const timer = setInterval(() => {
       setPosition((prev) => {
         const next = prev + 1000 * speed
-        if (activeReplay && next > activeReplay.durationMillis) {
+        if (next > activeReplay.durationMillis) {
           setPlaying(false)
           return activeReplay.durationMillis
         }
@@ -42,26 +74,72 @@ export function ReplaysPage() {
     return () => clearInterval(timer)
   }, [isPlaying, speed, activeReplay])
 
-  useEffect(() => {
-    if (jobStatus !== 'running') return
-    const timer = setInterval(() => {
-      setExportProgress((prev) => {
-        const next = prev + 20
-        if (next >= 100) {
-          setJobStatus('completed')
-          return 100
-        }
-        return next
-      })
-    }, 300)
-    return () => clearInterval(timer)
-  }, [jobStatus])
-
-  const triggerExport = () => {
+  const triggerExport = useCallback(async () => {
+    if (!token || !activeReplay) return
     setError(null)
     setExportProgress(0)
     setJobStatus('running')
-  }
+    setDownloadUrl(null)
+    const response = await apiFetch<{ jobId: string }>(`/api/replays/${activeReplay.id}/exports/mp4`, { method: 'POST' }, token)
+    setJobId(response.jobId)
+  }, [activeReplay, token])
+
+  useEffect(() => {
+    if (!token) return
+    const socket = new WebSocket(`${WS_BASE_URL}/ws/jobs?token=${encodeURIComponent(token)}`)
+    socket.onmessage = (event) => {
+      const data = JSON.parse(event.data) as any
+      if (jobId && data.jobId !== jobId) {
+        return
+      }
+      if (data.event === 'job.progress') {
+        setJobStatus('running')
+        setExportProgress(data.progress ?? 0)
+      }
+      if (data.event === 'job.completed') {
+        setJobStatus('completed')
+        setExportProgress(100)
+        setDownloadUrl(`${API_BASE_URL}/api/jobs/${data.jobId}/download`)
+      }
+      if (data.event === 'job.failed') {
+        setJobStatus('failed')
+        setError(data.error_code ?? 'UNKNOWN_ERROR')
+      }
+    }
+    return () => socket.close()
+  }, [jobId, token])
+
+  useEffect(() => {
+    if (!jobId || !token) return
+    const interval = setInterval(async () => {
+      try {
+        const job = await apiFetch<JobResponse>(`/api/jobs/${jobId}`, {}, token)
+        setExportProgress(job.progress)
+        if (job.status === 'SUCCEEDED') {
+          setJobStatus('completed')
+          setDownloadUrl(`${API_BASE_URL}/api/jobs/${jobId}/download`)
+          clearInterval(interval)
+        } else if (job.status === 'FAILED') {
+          setJobStatus('failed')
+          setError(job.error_code ?? job.error_message ?? 'JOB_FAILED')
+          clearInterval(interval)
+        }
+      } catch (err) {
+        // 폴백 폴링 실패 시 WS에 맡긴다.
+      }
+    }, 2000)
+    return () => clearInterval(interval)
+  }, [jobId, token])
+
+  const createSampleReplay = useCallback(async () => {
+    if (!token) return
+    try {
+      await apiFetch<ReplaySummary>('/api/replays/sample', { method: 'POST' }, token)
+      await loadReplays()
+    } catch (err) {
+      setError('샘플 리플레이 생성에 실패했습니다.')
+    }
+  }, [loadReplays, token])
 
   const progressLabel = useMemo(() => {
     switch (jobStatus) {
@@ -79,6 +157,14 @@ export function ReplaysPage() {
   return (
     <div className="replay-page">
       <h2>리플레이</h2>
+      {replays.length === 0 && (
+        <div className="empty-replays">
+          <p>리플레이가 없습니다.</p>
+          <button type="button" onClick={createSampleReplay}>
+            샘플 리플레이 생성
+          </button>
+        </div>
+      )}
       <div className="replay-layout">
         <aside>
           <ul>
@@ -125,7 +211,11 @@ export function ReplaysPage() {
               내보내기
             </button>
             <div aria-label="export-progress">{progressLabel}</div>
-            {jobStatus === 'completed' && <a href="#">다운로드</a>}
+            {jobStatus === 'completed' && downloadUrl && (
+              <a href={downloadUrl} target="_blank" rel="noreferrer">
+                다운로드
+              </a>
+            )}
             {jobStatus === 'failed' && <p className="error">{error}</p>}
           </div>
         </section>

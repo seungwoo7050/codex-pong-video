@@ -3,8 +3,14 @@ package com.codexpong.backend.job;
 import com.codexpong.backend.auth.model.AuthenticatedUser;
 import com.codexpong.backend.replay.Replay;
 import com.codexpong.backend.replay.ReplayService;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.ZoneOffset;
+import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -70,6 +76,29 @@ public class JobController {
                     : job.getErrorCode());
         }
         return JobResultResponse.from(job);
+    }
+
+    @GetMapping("/jobs/{jobId}/download")
+    public ResponseEntity<InputStreamResource> download(@AuthenticationPrincipal AuthenticatedUser user,
+            @PathVariable String jobId) throws IOException {
+        Job job = jobService.findJob(jobId);
+        if (!job.getReplay().getOwnerId().equals(user.id())) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "JOB_NOT_FOUND");
+        }
+        if (job.getStatus() != JobStatus.SUCCEEDED || job.getArtifactPath() == null) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, job.getErrorCode() == null ? "JOB_ALREADY_COMPLETED"
+                    : job.getErrorCode());
+        }
+        Path path = Path.of(job.getArtifactPath());
+        if (!Files.exists(path)) {
+            throw new ResponseStatusException(HttpStatus.NOT_FOUND, "JOB_NOT_FOUND");
+        }
+        MediaType type = job.getType() == JobType.MP4 ? MediaType.valueOf("video/mp4") : MediaType.IMAGE_PNG;
+        InputStreamResource resource = new InputStreamResource(Files.newInputStream(path));
+        return ResponseEntity.ok()
+                .contentType(type)
+                .header("Content-Disposition", "attachment; filename=\"" + path.getFileName() + "\"")
+                .body(resource);
     }
 
     public record JobCreatedResponse(String schemaVersion, String jobId) {

@@ -38,6 +38,7 @@ services:
       - APP_STORAGE_REPLAY_EVENTS=replay-events
       - APP_STORAGE_EXPORT=exports
       - REDIS_HOST=redis
+      - SPRING_PROFILES_ACTIVE=dev
     ports:
       - "8080:8080"
     depends_on:

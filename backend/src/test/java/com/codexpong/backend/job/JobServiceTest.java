@@ -4,6 +4,7 @@ import com.codexpong.backend.CodexPongApplication;
 import com.codexpong.backend.replay.Replay;
 import com.codexpong.backend.replay.ReplayService;
 import java.util.List;
+import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -15,9 +16,12 @@ import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.context.annotation.Import;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.data.redis.connection.stream.MapRecord;
+import org.springframework.data.redis.core.StringRedisTemplate;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.Mockito.mock;
 
 /**
  * [단위테스트] backend/src/test/java/com/codexpong/backend/job/JobServiceTest.java
@@ -67,6 +71,24 @@ class JobServiceTest {
 
         assertThatThrownBy(() -> jobService.updateProgress(job.getId(), 50, "불필요"))
                 .isInstanceOf(ResponseStatusException.class);
+    }
+
+    @Test
+    @DisplayName("Redis 진행률 메시지를 소비하면 Job 상태가 RUNNING으로 전환된다")
+    void progressMessageUpdatesJob() {
+        Job job = jobService.createJob(replay, JobType.MP4);
+        JobStreamConsumer consumer = new JobStreamConsumer(mock(StringRedisTemplate.class), jobService);
+        MapRecord<String, String, String> record = MapRecord.create("replay.export.progress", Map.of(
+                "jobId", job.getId(),
+                "progress", "40",
+                "message", "테스트 진행"
+        ));
+
+        consumer.onProgress(record);
+
+        Job updated = jobService.findJob(job.getId());
+        assertThat(updated.getStatus()).isEqualTo(JobStatus.RUNNING);
+        assertThat(updated.getProgress()).isEqualTo(40);
     }
 
     @TestConfiguration(proxyBeanMethods = false)

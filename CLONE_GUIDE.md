@@ -50,8 +50,8 @@ docker compose up -d
   - WebSocket: ws://localhost/ws/echo (쿼리 파라미터 `token` 필요)
   - 게임 WebSocket: ws://localhost/ws/game?roomId=<매칭된-방>&token=<JWT>
   - 작업 WebSocket: ws://localhost/ws/jobs?token=<JWT>
-  - REST 예시: `/api/auth/register`로 회원가입 후 `/api/match/quick`으로 일반전 티켓, `/api/match/ranked`로 랭크전 티켓 발급
-- 포함 서비스: backend / frontend / db / redis / worker / nginx
+- REST 예시: `/api/auth/register`로 회원가입 후 `/api/replays/sample`(dev 프로파일)로 샘플 리플레이 생성 → `/api/replays/{id}/exports/mp4`로 작업 생성
+- 포함 서비스: backend / frontend / db / redis / worker / nginx (worker는 `npm run start`로 Redis Streams 소비)
 - 볼륨: `replay_events`, `export_artifacts` (리플레이 이벤트/산출물 공유)
 
 ## 6. 개별 서비스 로컬 실행 (선택)
@@ -70,7 +70,9 @@ npm run dev -- --host --port 5173
 ```bash
 cd worker
 npm install
-npm test   # ffprobe/프레임 가드 유닛 테스트
+npm run build
+npm run start   # Redis Streams를 실시간 소비하는 엔트리
+npm test        # ffprobe/프레임 가드 유닛 테스트
 ```
 
 ## 7. 테스트 실행
@@ -101,3 +103,4 @@ npm run build
 - 주요 기능: 리플레이 메타/이벤트 조회, 내보내기 작업 생성, Redis Streams 기반 워커 진행률, WebSocket 진행률 푸시.
 - 리플레이 파일은 `APP_STORAGE_ROOT` 하위 `replay-events`에 JSONL_V1로 저장되며, 산출물은 `exports` 하위에서 공유된다.
 - 워커 컨테이너는 ffmpeg/ffprobe를 사전 설치하고, 검증 실패 시 안정적인 `error_code`를 반환하도록 설계되었다.
+- dev 프로파일에서는 `/api/replays/sample`로 샘플 리플레이를 즉시 생성할 수 있으며, 완성된 산출물은 `/api/jobs/{jobId}/download`로 바로 내려받는다.
