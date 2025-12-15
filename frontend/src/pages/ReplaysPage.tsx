@@ -2,15 +2,17 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { apiFetch } from '../shared/api/client'
 import { API_BASE_URL, WS_BASE_URL } from '../constants'
 import { useAuth } from '../features/auth/AuthProvider'
+import { ReplayRenderer } from '../shared/components/ReplayRenderer'
+import { useAudioCue } from '../hooks/useAudioCue'
 
 /**
  * [페이지] frontend/src/pages/ReplaysPage.tsx
  * 설명:
  *   - 리플레이 목록을 실제 API에서 불러오고 재생 컨트롤과 내보내기 요청을 제공한다.
  *   - /ws/jobs WebSocket과 REST 폴백을 통해 진행률/완료/실패 이벤트를 반영한다.
- * 버전: v0.5.0
+ * 버전: v0.6.0
  * 관련 설계문서:
- *   - design/contracts/v0.5.0-replay-export-contract.md
+ *   - design/contracts/v0.6.0-portfolio-media-contract.md
  */
 type ReplaySummary = {
   id: number
@@ -43,6 +45,7 @@ export function ReplaysPage() {
   const [jobStatus, setJobStatus] = useState<'idle' | 'running' | 'completed' | 'failed'>('idle')
   const [error, setError] = useState<string | null>(null)
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null)
+  const { enqueueComplete } = useAudioCue()
 
   const activeReplay = useMemo(() => replays.find((r) => r.id === selectedId) ?? replays[0], [replays, selectedId])
 
@@ -86,27 +89,53 @@ export function ReplaysPage() {
 
   useEffect(() => {
     if (!token) return
-    const socket = new WebSocket(`${WS_BASE_URL}/ws/jobs?token=${encodeURIComponent(token)}`)
-    socket.onmessage = (event) => {
-      const data = JSON.parse(event.data) as any
-      if (jobId && data.jobId !== jobId) {
-        return
+    let attempt = 0
+    let activeSocket: WebSocket | null = null
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+    const connect = () => {
+      const socket = new WebSocket(`${WS_BASE_URL}/ws/jobs?token=${encodeURIComponent(token)}`)
+      activeSocket = socket
+      socket.onopen = () => {
+        attempt = 0
       }
-      if (data.event === 'job.progress') {
-        setJobStatus('running')
-        setExportProgress(data.progress ?? 0)
+      socket.onmessage = (event) => {
+        const data = JSON.parse(event.data) as any
+        if (jobId && data.jobId !== jobId) {
+          return
+        }
+        if (data.event === 'job.progress') {
+          setJobStatus('running')
+          setExportProgress(data.progress ?? 0)
+        }
+        if (data.event === 'job.completed') {
+          setJobStatus('completed')
+          setExportProgress(100)
+          setDownloadUrl(`${API_BASE_URL}/api/jobs/${data.jobId}/download`)
+        }
+        if (data.event === 'job.failed') {
+          setJobStatus('failed')
+          setError(data.error_code ?? 'UNKNOWN_ERROR')
+        }
       }
-      if (data.event === 'job.completed') {
-        setJobStatus('completed')
-        setExportProgress(100)
-        setDownloadUrl(`${API_BASE_URL}/api/jobs/${data.jobId}/download`)
+      socket.onclose = () => {
+        attempt += 1
+        const delay = Math.min(10000, Math.pow(2, attempt) * 1000)
+        reconnectTimer = setTimeout(connect, delay)
       }
-      if (data.event === 'job.failed') {
-        setJobStatus('failed')
-        setError(data.error_code ?? 'UNKNOWN_ERROR')
+      socket.onerror = () => {
+        socket.close()
       }
     }
-    return () => socket.close()
+
+    connect()
+
+    return () => {
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+      }
+      activeSocket?.close()
+    }
   }, [jobId, token])
 
   useEffect(() => {
@@ -130,6 +159,12 @@ export function ReplaysPage() {
     }, 2000)
     return () => clearInterval(interval)
   }, [jobId, token])
+
+  useEffect(() => {
+    if (jobStatus === 'completed') {
+      enqueueComplete()
+    }
+  }, [enqueueComplete, jobStatus])
 
   const createSampleReplay = useCallback(async () => {
     if (!token) return
@@ -206,6 +241,11 @@ export function ReplaysPage() {
               </select>
             </label>
           </div>
+          <ReplayRenderer
+            width={640}
+            height={360}
+            progress={(position || 0) / Math.max(activeReplay?.durationMillis ?? 1, 1)}
+          />
           <div className="export-panel">
             <button onClick={triggerExport} disabled={jobStatus === 'running'}>
               내보내기

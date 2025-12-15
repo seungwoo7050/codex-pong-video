@@ -3,9 +3,10 @@ package com.codexpong.backend.job;
 import com.codexpong.backend.storage.StoragePathResolver;
 import java.util.HashMap;
 import java.util.Map;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.context.annotation.Profile;
 import org.springframework.data.redis.connection.stream.MapRecord;
 import org.springframework.data.redis.core.StringRedisTemplate;
-import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Component;
 
 /**
@@ -13,9 +14,9 @@ import org.springframework.stereotype.Component;
  * 설명:
  *   - 작업 생성 시 Redis Streams `replay.export.request` 스트림에 메시지를 기록한다.
  *   - schemaVersion 필드를 고정으로 포함시켜 계약 문서를 준수한다.
- * 버전: v0.5.0
+ * 버전: v0.6.0
  * 관련 설계문서:
- *   - design/contracts/v0.5.0-replay-export-contract.md
+ *   - design/contracts/v0.6.0-portfolio-media-contract.md
  */
 @Component
 @Profile("!test")
@@ -25,10 +26,13 @@ public class RedisJobQueuePublisher implements JobQueuePublisher {
 
     private final StringRedisTemplate redisTemplate;
     private final StoragePathResolver storagePathResolver;
+    private final boolean preferHwAccel;
 
-    public RedisJobQueuePublisher(StringRedisTemplate redisTemplate, StoragePathResolver storagePathResolver) {
+    public RedisJobQueuePublisher(StringRedisTemplate redisTemplate, StoragePathResolver storagePathResolver,
+            @Value("${export.hw-accel:false}") boolean preferHwAccel) {
         this.redisTemplate = redisTemplate;
         this.storagePathResolver = storagePathResolver;
+        this.preferHwAccel = preferHwAccel;
     }
 
     @Override
@@ -43,6 +47,7 @@ public class RedisJobQueuePublisher implements JobQueuePublisher {
         fields.put("outputDir", storagePathResolver.ensureExportDir(job.getReplay().getOwnerId(), job.getReplay().getId())
                 .toString());
         fields.put("durationMillis", String.valueOf(job.getReplay().getDurationMillis()));
+        fields.put("preferHw", Boolean.toString(preferHwAccel));
         redisTemplate.opsForStream().add(MapRecord.create(REQUEST_STREAM, fields));
     }
 }

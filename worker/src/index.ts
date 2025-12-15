@@ -5,15 +5,16 @@ import fsp from 'fs/promises'
 import path from 'path'
 import crypto from 'crypto'
 import { assertNonTrivialFrames, validateProbeOutput } from './validation'
+import { buildEncoderPlan } from './encoderConfig'
 
 /**
  * [엔트리] worker/src/index.ts
  * 설명:
  *   - Redis Streams에서 내보내기 요청을 소비하고 ffmpeg/ffprobe로 MP4·썸네일 산출물을 생성한다.
  *   - 진행률/결과를 Streams로 다시 발행하여 백엔드가 상태를 갱신하도록 한다.
- * 버전: v0.5.0
+ * 버전: v0.6.0
  * 관련 설계문서:
- *   - design/contracts/v0.5.0-replay-export-contract.md
+ *   - design/contracts/v0.6.0-portfolio-media-contract.md
  */
 const REQUEST_STREAM = 'replay.export.request'
 const PROGRESS_STREAM = 'replay.export.progress'
@@ -24,6 +25,7 @@ const CONSUMER = `worker-${process.pid}`
 const REDIS_HOST = process.env.REDIS_HOST ?? 'localhost'
 const STORAGE_ROOT = process.env.APP_STORAGE_ROOT ?? '/tmp/codexpong-storage'
 const EXPORT_DIR = process.env.APP_STORAGE_EXPORT ?? 'exports'
+const PREFER_HW_ENV = (process.env.EXPORT_HW_ACCEL ?? 'false').toLowerCase() === 'true'
 
 interface ExportMessage {
   jobId: string
@@ -33,7 +35,10 @@ interface ExportMessage {
   eventPath: string
   outputDir: string
   durationMillis: number
+  preferHw: boolean
 }
+
+let cachedEncoderList: string[] | null = null
 
 async function main() {
   const client = createClient({ url: `redis://${REDIS_HOST}:6379` })
@@ -107,6 +112,7 @@ function parseExportMessage(fields: Record<string, string>): ExportMessage {
     eventPath: fields.eventPath,
     outputDir: fields.outputDir ?? path.join(STORAGE_ROOT, EXPORT_DIR, fields.ownerId, fields.replayId),
     durationMillis: Number(fields.durationMillis ?? '5000'),
+    preferHw: fields.preferHw === 'true' || PREFER_HW_ENV,
   }
 }
 
@@ -117,15 +123,51 @@ async function renderMp4(client: ReturnType<typeof createClient>, message: Expor
   const finalPath = path.join(exportDir, `${message.jobId}.mp4`)
   await publishProgress(client, message.jobId, 10, 'ffmpeg 시작')
   const logTail: string[] = []
-  await runFfmpeg(
-    client,
-    ['-y', '-f', 'lavfi', '-i', `color=c=black:s=640x360:d=${Math.max(message.durationMillis / 1000, 1)}`,
-      '-vf', `drawtext=text='Replay ${message.replayId} %{eif\\:t\\:d}ms':fontcolor=white:fontsize=32:x=20:y=20`,
-      '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-progress', 'pipe:1', '-nostats', tempPath],
-    message.durationMillis,
-    message.jobId,
-    logTail,
-  )
+  const encoderPlan = await resolveEncoderPlan(message.preferHw, logTail)
+  const baseArgs = [
+    '-y',
+    '-f',
+    'lavfi',
+    '-i',
+    `color=c=black:s=640x360:d=${Math.max(message.durationMillis / 1000, 1)}`,
+    '-vf',
+    `drawtext=text='Replay ${message.replayId} %{eif\\:t\\:d}ms':fontcolor=white:fontsize=32:x=20:y=20`,
+    '-pix_fmt',
+    'yuv420p',
+    '-progress',
+    'pipe:1',
+    '-nostats',
+  ]
+  let lastError: any = null
+  for (let i = 0; i < encoderPlan.length; i += 1) {
+    const encoder = encoderPlan[i]
+    if (encoder.fallbackNote) {
+      logTail.push(encoder.fallbackNote)
+      console.warn('[hwaccel]', encoder.fallbackNote)
+      if (encoder.fallbackNote === 'HWACCEL_HANDSHAKE_FAILED') {
+        await publishProgress(client, message.jobId, 10, 'HW 가속 실패, 소프트웨어 폴백 중').catch(() => {})
+      }
+    }
+    try {
+      await runFfmpeg(
+        client,
+        [...encoder.preArgs, ...baseArgs, '-c:v', encoder.codec, tempPath],
+        message.durationMillis,
+        message.jobId,
+        logTail,
+      )
+      lastError = null
+      break
+    } catch (err) {
+      lastError = err
+      if (i >= encoderPlan.length - 1) {
+        throw err
+      }
+    }
+  }
+  if (lastError) {
+    throw lastError
+  }
   const probe = await probeFile(tempPath)
   const validated = validateProbeOutput(probe)
   const firstHash = await extractFrameHash(tempPath, validated.durationMs * 0.1)
@@ -209,6 +251,36 @@ async function runFfmpeg(
       }
       resolve()
     })
+  })
+}
+
+async function resolveEncoderPlan(preferHw: boolean, logTail: string[]) {
+  const available = await detectHardwareEncoders()
+  const plan = buildEncoderPlan(preferHw, available)
+  if (plan[0]?.fallbackNote && plan.length === 1) {
+    console.warn('[hwaccel]', plan[0].fallbackNote)
+    logTail.push(plan[0].fallbackNote)
+  }
+  return plan
+}
+
+async function detectHardwareEncoders(): Promise<string[]> {
+  if (cachedEncoderList) {
+    return cachedEncoderList
+  }
+  return new Promise((resolve) => {
+    const proc = spawn('ffmpeg', ['-encoders'])
+    const lines: string[] = []
+    proc.stdout.on('data', (chunk) => {
+      lines.push(...chunk.toString().split('\n'))
+    })
+    proc.on('close', () => {
+      const targets = ['h264_nvenc', 'h264_vaapi', 'h264_qsv']
+      const detected = targets.filter((name) => lines.some((line) => line.toLowerCase().includes(name)))
+      cachedEncoderList = detected
+      resolve(detected)
+    })
+    proc.on('error', () => resolve([]))
   })
 }
 
