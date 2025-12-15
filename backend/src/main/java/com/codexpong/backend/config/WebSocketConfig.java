@@ -2,6 +2,7 @@ package com.codexpong.backend.config;
 
 import com.codexpong.backend.game.EchoWebSocketHandler;
 import com.codexpong.backend.game.GameWebSocketHandler;
+import com.codexpong.backend.job.JobWebSocketHandler;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;
 import org.springframework.web.socket.config.annotation.WebSocketConfigurer;
@@ -27,13 +28,16 @@ public class WebSocketConfig implements WebSocketConfigurer {
     private final EchoWebSocketHandler echoWebSocketHandler;
     private final GameWebSocketHandler gameWebSocketHandler;
     private final WebSocketAuthHandshakeInterceptor webSocketAuthHandshakeInterceptor;
+    private final JobWebSocketHandler jobWebSocketHandler;
 
     public WebSocketConfig(EchoWebSocketHandler echoWebSocketHandler,
             GameWebSocketHandler gameWebSocketHandler,
-            WebSocketAuthHandshakeInterceptor webSocketAuthHandshakeInterceptor) {
+            WebSocketAuthHandshakeInterceptor webSocketAuthHandshakeInterceptor,
+            JobWebSocketHandler jobWebSocketHandler) {
         this.echoWebSocketHandler = echoWebSocketHandler;
         this.gameWebSocketHandler = gameWebSocketHandler;
         this.webSocketAuthHandshakeInterceptor = webSocketAuthHandshakeInterceptor;
+        this.jobWebSocketHandler = jobWebSocketHandler;
     }
 
     @Override
@@ -44,6 +48,11 @@ public class WebSocketConfig implements WebSocketConfigurer {
                 .setAllowedOrigins("*");
 
         registry.addHandler(gameWebSocketHandler, "/ws/game")
+                .addInterceptors(webSocketAuthHandshakeInterceptor)
+                .setHandshakeHandler(new WebSocketUserHandshakeHandler())
+                .setAllowedOrigins("*");
+
+        registry.addHandler(jobWebSocketHandler, "/ws/jobs")
                 .addInterceptors(webSocketAuthHandshakeInterceptor)
                 .setHandshakeHandler(new WebSocketUserHandshakeHandler())
                 .setAllowedOrigins("*");

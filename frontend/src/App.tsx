@@ -8,6 +8,7 @@ import { ProfilePage } from './pages/ProfilePage'
 import { LeaderboardPage } from './pages/LeaderboardPage'
 import { useAuth } from './features/auth/AuthProvider'
 import { ProtectedRoute } from './features/auth/ProtectedRoute'
+import { ReplaysPage } from './pages/ReplaysPage'
 
 /**
  * [루트] frontend/src/App.tsx
@@ -36,6 +37,7 @@ function App() {
           <Link to="/lobby">로비</Link>
           <Link to="/game">게임</Link>
           <Link to="/leaderboard">리더보드</Link>
+          <Link to="/replays">리플레이</Link>
           {status === 'authenticated' ? (
             <>
               <Link to="/profile">내 프로필</Link>
@@ -85,6 +87,14 @@ function App() {
           element={(
             <ProtectedRoute>
               <LeaderboardPage />
+            </ProtectedRoute>
+          )}
+        />
+        <Route
+          path="/replays"
+          element={(
+            <ProtectedRoute>
+              <ReplaysPage />
             </ProtectedRoute>
           )}
         />
