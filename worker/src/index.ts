@@ -4,8 +4,10 @@ import fs from 'fs'
 import fsp from 'fs/promises'
 import path from 'path'
 import crypto from 'crypto'
-import { assertNonTrivialFrames, validateProbeOutput } from './validation'
+import { assertNonTrivialDiffScore, validateProbeOutput } from './validation'
 import { buildEncoderPlan } from './encoderConfig'
+import { NativeBridge } from './nativeBridge'
+import { ERROR_CODES } from './errorCodes'
 
 /**
  * [엔트리] worker/src/index.ts
@@ -26,6 +28,10 @@ const REDIS_HOST = process.env.REDIS_HOST ?? 'localhost'
 const STORAGE_ROOT = process.env.APP_STORAGE_ROOT ?? '/tmp/codexpong-storage'
 const EXPORT_DIR = process.env.APP_STORAGE_EXPORT ?? 'exports'
 const PREFER_HW_ENV = (process.env.EXPORT_HW_ACCEL ?? 'false').toLowerCase() === 'true'
+const TRIVIAL_DIFF_THRESHOLD = (() => {
+  const parsed = Number.parseFloat(process.env.TRIVIAL_DIFF_THRESHOLD ?? '0.0005')
+  return Number.isFinite(parsed) ? parsed : 0.0005
+})()
 
 interface ExportMessage {
   jobId: string
@@ -89,7 +95,7 @@ async function handleResponse(client: ReturnType<typeof createClient>, response:
           durationMillis: result.durationMillis,
         })
       } catch (err: any) {
-        const errorCode = err?.message === 'EXPORT_TRIVIAL_FRAMES' ? 'EXPORT_TRIVIAL_FRAMES' : err?.message ?? 'UNKNOWN_ERROR'
+        const errorCode = typeof err?.message === 'string' ? err.message : ERROR_CODES.UNKNOWN_ERROR
         await publishResult(client, parsed.jobId, {
           status: 'FAILED',
           error_code: errorCode,
@@ -125,6 +131,8 @@ async function renderMp4(client: ReturnType<typeof createClient>, message: Expor
   const logTail: string[] = []
   const encoderPlan = await resolveEncoderPlan(message.preferHw, logTail)
   const baseArgs = [
+    '-hide_banner',
+    '-nostdin',
     '-y',
     '-f',
     'lavfi',
@@ -170,9 +178,18 @@ async function renderMp4(client: ReturnType<typeof createClient>, message: Expor
   }
   const probe = await probeFile(tempPath)
   const validated = validateProbeOutput(probe)
-  const firstHash = await extractFrameHash(tempPath, validated.durationMs * 0.1)
-  const lastHash = await extractFrameHash(tempPath, validated.durationMs * 0.9)
-  assertNonTrivialFrames(firstHash, lastHash)
+  const nativeBridge = new NativeBridge()
+  const frameWidth = validated.width
+  const frameHeight = validated.height
+  const channels = 3
+  const firstFrame = await extractFrameBuffer(tempPath, validated.durationMs * 0.1, logTail)
+  const lastFrame = await extractFrameBuffer(tempPath, validated.durationMs * 0.9, logTail)
+  const expectedSize = frameWidth * frameHeight * channels
+  if (firstFrame.length !== expectedSize || lastFrame.length !== expectedSize) {
+    throw new Error(ERROR_CODES.FAILED_NATIVE_VALIDATION)
+  }
+  const diffScore = await nativeBridge.analyzeFramesFromBuffers(firstFrame, lastFrame, frameWidth, frameHeight, channels)
+  assertNonTrivialDiffScore(diffScore, TRIVIAL_DIFF_THRESHOLD)
   await publishProgress(client, message.jobId, 95, '검증 중')
   await fsp.rename(tempPath, finalPath)
   const checksum = await sha256File(finalPath)
@@ -189,7 +206,7 @@ async function renderThumbnail(client: ReturnType<typeof createClient>, message:
   const logTail: string[] = []
   await runFfmpeg(
     client,
-    ['-y', '-f', 'lavfi', '-i', `color=c=blue:s=640x360:d=1`, '-vf',
+    ['-hide_banner', '-nostdin', '-y', '-f', 'lavfi', '-i', `color=c=blue:s=640x360:d=1`, '-vf',
       `drawtext=text='Replay ${message.replayId} thumbnail':fontcolor=white:fontsize=28:x=20:y=20`,
       '-frames:v', '1', tempPath],
     1000,
@@ -215,13 +232,13 @@ async function runFfmpeg(
     const timer = setTimeout(() => {
       killed = true
       proc.kill('SIGKILL')
-      const error: any = new Error('FFMPEG_TIMEOUT')
+      const error: any = new Error(ERROR_CODES.FFMPEG_TIMEOUT)
       error.logTail = [...logTail]
       reject(error)
     }, Math.max(durationMs * 2, 5000))
 
     proc.stdout.on('data', (chunk) => {
-      const text = chunk.toString()
+      const text = chunk.toString('utf8')
       text.split('\n').forEach((line: string) => {
         if (line.startsWith('out_time_ms=')) {
           const out = Number(line.replace('out_time_ms=', '').trim())
@@ -233,7 +250,7 @@ async function runFfmpeg(
       })
     })
     proc.stderr.on('data', (chunk) => {
-      const line = chunk.toString().trim()
+      const line = chunk.toString('utf8').trim()
       if (!line) return
       logTail.push(line)
       if (logTail.length > 20) {
@@ -244,7 +261,7 @@ async function runFfmpeg(
       clearTimeout(timer)
       if (killed) return
       if (code !== 0) {
-        const error: any = new Error('FFMPEG_EXIT_NONZERO')
+        const error: any = new Error(ERROR_CODES.FFMPEG_ENCODE_ERROR)
         error.logTail = [...logTail]
         reject(error)
         return
@@ -269,10 +286,10 @@ async function detectHardwareEncoders(): Promise<string[]> {
     return cachedEncoderList
   }
   return new Promise((resolve) => {
-    const proc = spawn('ffmpeg', ['-encoders'])
+    const proc = spawn('ffmpeg', ['-hide_banner', '-nostdin', '-encoders'])
     const lines: string[] = []
     proc.stdout.on('data', (chunk) => {
-      lines.push(...chunk.toString().split('\n'))
+      lines.push(...chunk.toString('utf8').split('\n'))
     })
     proc.on('close', () => {
       const targets = ['h264_nvenc', 'h264_vaapi', 'h264_qsv']
@@ -286,36 +303,69 @@ async function detectHardwareEncoders(): Promise<string[]> {
 
 async function probeFile(filePath: string) {
   return new Promise<any>((resolve, reject) => {
-    const proc = spawn('ffprobe', ['-v', 'quiet', '-print_format', 'json', '-show_streams', '-show_format', filePath])
+    const proc = spawn('ffprobe', ['-hide_banner', '-nostdin', '-v', 'quiet', '-print_format', 'json', '-show_streams', '-show_format', filePath])
     const chunks: Buffer[] = []
     proc.stdout.on('data', (c) => chunks.push(c))
     proc.on('close', (code) => {
       if (code !== 0) {
-        reject(new Error('FFPROBE_INVALID_OUTPUT'))
+        reject(new Error(ERROR_CODES.FFPROBE_INVALID_OUTPUT))
         return
       }
       try {
-        const parsed = JSON.parse(Buffer.concat(chunks).toString())
+        const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'))
         resolve(parsed)
       } catch (err) {
-        reject(new Error('FFPROBE_INVALID_OUTPUT'))
+        reject(new Error(ERROR_CODES.FFPROBE_INVALID_OUTPUT))
       }
     })
   })
 }
 
-async function extractFrameHash(filePath: string, timestampMs: number) {
-  return new Promise<string>((resolve, reject) => {
-    const proc = spawn('ffmpeg', ['-ss', (timestampMs / 1000).toString(), '-i', filePath, '-frames:v', '1', '-f', 'image2pipe', '-'])
+async function extractFrameBuffer(filePath: string, timestampMs: number, logTail: string[]) {
+  return new Promise<Buffer>((resolve, reject) => {
+    const args = [
+      '-hide_banner',
+      '-nostdin',
+      '-ss',
+      (timestampMs / 1000).toFixed(3),
+      '-i',
+      filePath,
+      '-frames:v',
+      '1',
+      '-f',
+      'rawvideo',
+      '-pix_fmt',
+      'rgb24',
+      'pipe:1',
+    ]
+    const proc = spawn('ffmpeg', args, { stdio: ['ignore', 'pipe', 'pipe'] })
     const chunks: Buffer[] = []
-    proc.stdout.on('data', (c) => chunks.push(c))
+    const timer = setTimeout(() => {
+      proc.kill('SIGKILL')
+      const error: any = new Error(ERROR_CODES.FFMPEG_TIMEOUT)
+      error.logTail = [...logTail]
+      reject(error)
+    }, 5000)
+    proc.stdout.on('data', (chunk) => {
+      chunks.push(chunk as Buffer)
+    })
+    proc.stderr.on('data', (chunk) => {
+      const line = chunk.toString('utf8').trim()
+      if (!line) return
+      logTail.push(line)
+      if (logTail.length > 20) {
+        logTail.shift()
+      }
+    })
     proc.on('close', (code) => {
+      clearTimeout(timer)
       if (code !== 0) {
-        reject(new Error('EXPORT_TRIVIAL_FRAMES'))
+        const error: any = new Error(ERROR_CODES.FFMPEG_ENCODE_ERROR)
+        error.logTail = [...logTail]
+        reject(error)
         return
       }
-      const hash = crypto.createHash('sha256').update(Buffer.concat(chunks)).digest('hex')
-      resolve(hash)
+      resolve(Buffer.concat(chunks))
     })
   })
 }

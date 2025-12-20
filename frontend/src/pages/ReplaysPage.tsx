@@ -4,6 +4,7 @@ import { API_BASE_URL, WS_BASE_URL } from '../constants'
 import { useAuth } from '../features/auth/AuthProvider'
 import { ReplayRenderer } from '../shared/components/ReplayRenderer'
 import { useAudioCue } from '../hooks/useAudioCue'
+import { usePerfAudit } from '../hooks/usePerfAudit'
 
 /**
  * [페이지] frontend/src/pages/ReplaysPage.tsx
@@ -46,8 +47,11 @@ export function ReplaysPage() {
   const [error, setError] = useState<string | null>(null)
   const [downloadUrl, setDownloadUrl] = useState<string | null>(null)
   const { enqueueComplete } = useAudioCue()
-
   const activeReplay = useMemo(() => replays.find((r) => r.id === selectedId) ?? replays[0], [replays, selectedId])
+  const playbackCompleted = Boolean(activeReplay && position >= activeReplay.durationMillis && !isPlaying)
+  const perfLabel = activeReplay ? `replay-${activeReplay.id}` : 'replay'
+
+  usePerfAudit({ active: isPlaying, reportOnStop: playbackCompleted, label: perfLabel })
 
   const loadReplays = useCallback(async () => {
     if (!token) return

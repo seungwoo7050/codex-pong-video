@@ -3,10 +3,12 @@
  * 설명:
  *   - ffprobe 구조 검증과 트리비얼 프레임 감지를 수행한다.
  *   - v0.5.0 포트폴리오 트랙 안전장치 요구사항을 반영한다.
- * 버전: v0.5.0
+ * 버전: v0.6.0
  * 관련 설계문서:
- *   - design/contracts/v0.5.0-replay-export-contract.md
+ *   - design/contracts/v0.6.0-portfolio-media-contract.md
  */
+import { ERROR_CODES } from './errorCodes'
+
 export type ProbeStream = {
   codec_type?: string
   width?: number
@@ -32,15 +34,15 @@ export function validateProbeOutput(probe: ProbeOutput): ProbeValidationResult {
   const streams = probe.streams ?? []
   const videoStreams = streams.filter((s) => s.codec_type === 'video')
   if (videoStreams.length === 0) {
-    throw new Error('FFPROBE_INVALID_OUTPUT')
+    throw new Error(ERROR_CODES.FFPROBE_INVALID_OUTPUT)
   }
   const first = videoStreams[0]
   if (!first.width || !first.height || first.width <= 0 || first.height <= 0) {
-    throw new Error('FFPROBE_INVALID_OUTPUT')
+    throw new Error(ERROR_CODES.FFPROBE_INVALID_OUTPUT)
   }
   const duration = probe.format?.duration ? Number(probe.format.duration) : 0
   if (!Number.isFinite(duration) || duration <= 0) {
-    throw new Error('FFPROBE_INVALID_OUTPUT')
+    throw new Error(ERROR_CODES.FFPROBE_INVALID_OUTPUT)
   }
   return {
     durationMs: Math.round(duration * 1000),
@@ -50,10 +52,10 @@ export function validateProbeOutput(probe: ProbeOutput): ProbeValidationResult {
 }
 
 /**
- * 서로 다른 시점의 프레임 해시가 동일하면 의미없는 영상으로 간주한다.
+ * 프레임 유사도(diff_score)가 임계값 이하이면 의미없는 영상으로 간주한다.
  */
-export function assertNonTrivialFrames(firstHash: string, secondHash: string) {
-  if (firstHash === secondHash) {
-    throw new Error('EXPORT_TRIVIAL_FRAMES')
+export function assertNonTrivialDiffScore(diffScore: number, threshold: number) {
+  if (diffScore <= threshold) {
+    throw new Error(ERROR_CODES.FAILED_NATIVE_VALIDATION)
   }
 }

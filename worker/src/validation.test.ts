@@ -1,13 +1,13 @@
-import { assertNonTrivialFrames, validateProbeOutput } from './validation'
+import { assertNonTrivialDiffScore, validateProbeOutput } from './validation'
 import { describe, expect, it } from 'vitest'
 
 /**
  * [테스트] worker/src/validation.test.ts
  * 설명:
  *   - ffprobe 검증과 트리비얼 프레임 가드를 검증한다.
- * 버전: v0.5.0
+ * 버전: v0.6.0
  * 관련 설계문서:
- *   - design/contracts/v0.5.0-replay-export-contract.md
+ *   - design/contracts/v0.6.0-portfolio-media-contract.md
  */
 describe('validateProbeOutput', () => {
   it('유효한 비디오 스트림과 duration을 반환한다', () => {
@@ -26,12 +26,12 @@ describe('validateProbeOutput', () => {
   })
 })
 
-describe('assertNonTrivialFrames', () => {
-  it('서로 다른 해시이면 통과한다', () => {
-    expect(() => assertNonTrivialFrames('hash-a', 'hash-b')).not.toThrow()
+describe('assertNonTrivialDiffScore', () => {
+  it('임계값보다 크면 통과한다', () => {
+    expect(() => assertNonTrivialDiffScore(0.01, 0.001)).not.toThrow()
   })
 
-  it('동일 해시면 EXPORT_TRIVIAL_FRAMES 에러', () => {
-    expect(() => assertNonTrivialFrames('same', 'same')).toThrowError('EXPORT_TRIVIAL_FRAMES')
+  it('임계값 이하면 FAILED_NATIVE_VALIDATION 에러', () => {
+    expect(() => assertNonTrivialDiffScore(0.0001, 0.001)).toThrowError('FAILED_NATIVE_VALIDATION')
   })
 })
