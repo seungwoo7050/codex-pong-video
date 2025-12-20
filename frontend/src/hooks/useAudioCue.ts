@@ -14,6 +14,7 @@ export function useAudioCue() {
   const [ready, setReady] = useState(false)
   const queueRef = useRef<number[]>([])
   const playingRef = useRef(false)
+  const resumeBoundRef = useRef(false)
 
   useEffect(() => {
     const AudioCtor: typeof AudioContext | undefined = (window as any).AudioContext || (window as any).webkitAudioContext
@@ -22,8 +23,26 @@ export function useAudioCue() {
     }
     const context = new AudioCtor()
     ctxRef.current = context
-    setReady(true)
+    const resumeContext = () => {
+      if (!ctxRef.current) return
+      if (ctxRef.current.state !== 'running') {
+        ctxRef.current.resume().catch(() => {})
+      }
+      setReady(true)
+      if (resumeBoundRef.current) {
+        window.removeEventListener('pointerdown', resumeContext)
+        window.removeEventListener('keydown', resumeContext)
+        resumeBoundRef.current = false
+      }
+    }
+    window.addEventListener('pointerdown', resumeContext, { once: true })
+    window.addEventListener('keydown', resumeContext, { once: true })
+    resumeBoundRef.current = true
     return () => {
+      if (resumeBoundRef.current) {
+        window.removeEventListener('pointerdown', resumeContext)
+        window.removeEventListener('keydown', resumeContext)
+      }
       context.close().catch(() => {})
     }
   }, [])

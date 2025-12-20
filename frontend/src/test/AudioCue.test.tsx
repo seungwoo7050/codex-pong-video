@@ -1,6 +1,6 @@
-import { render } from '@testing-library/react'
+import { render, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { useEffect } from 'react'
+import { act, useEffect } from 'react'
 import { useAudioCue } from '../hooks/useAudioCue'
 
 /**
@@ -35,12 +35,17 @@ class FakeAudioContext {
   static lastInstance: FakeAudioContext | null = null
   public currentTime = 0
   public destination: any = {}
+  public state: AudioContextState = 'suspended'
   constructor() {
     FakeAudioContext.lastInstance = this
   }
   createOscillator = vi.fn(() => new FakeOscillator())
   createGain = vi.fn(() => new FakeGain())
   close = vi.fn().mockResolvedValue(undefined)
+  resume = vi.fn().mockImplementation(() => {
+    this.state = 'running'
+    return Promise.resolve()
+  })
 }
 
 describe('useAudioCue', () => {
@@ -54,7 +59,7 @@ describe('useAudioCue', () => {
     ;(global as any).AudioContext = original
   })
 
-  it('준비 후 enqueueComplete 호출 시 오실레이터를 실행한다', () => {
+  it('준비 후 enqueueComplete 호출 시 오실레이터를 실행한다', async () => {
     const Test = () => {
       const { ready, enqueueComplete } = useAudioCue()
       useEffect(() => {
@@ -66,6 +71,11 @@ describe('useAudioCue', () => {
     }
     render(<Test />)
     const ctxInstance = FakeAudioContext.lastInstance
-    expect(ctxInstance?.createOscillator).toHaveBeenCalled()
+    await act(async () => {
+      window.dispatchEvent(new Event('pointerdown'))
+    })
+    await waitFor(() => {
+      expect(ctxInstance?.createOscillator).toHaveBeenCalled()
+    })
   })
 })
